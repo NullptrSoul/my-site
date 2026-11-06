@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>蛇的脑回路 · NullptrSoul 的小站</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>蛇的脑回路</h1>
+  <p class="tagline">一条贪吃蛇，三个脑子</p>
+  <p>你可以自己玩，也可以把方向盘交给算法，看它怎么想</p>
+</header>
+<nav>
+  <a href="index.html">主页</a>
+  <a href="gallery.html">图墙</a>
+  <a href="game.html">游戏</a>
+</nav>
+<main>
+  <section>
+    <div class="scoreboard">
+      <span class="score-chip">本局 <span id="score">0</span> 分 · 长度 <span id="length">3</span></span>
+      <span class="score-chip">你的最佳 <span id="best-manual">0</span></span>
+      <span class="score-chip">贪心脑最佳 <span id="best-greedy">0</span></span>
+      <span class="score-chip">谨慎脑最佳 <span id="best-safe">0</span></span>
+    </div>
+    <p class="status-line" id="status">选一个脑子，点开始。</p>
+    <div class="game-board-wrap">
+      <canvas id="board" width="420" height="420"></canvas>
+    </div>
+    <div class="mode-row">
+      <button class="mode-btn active" data-mode="manual">我来开</button>
+      <button class="mode-btn" data-mode="greedy">贪心脑</button>
+      <button class="mode-btn" data-mode="safe">谨慎脑</button>
+    </div>
+    <div class="mode-row">
+      <button class="ctl-btn" id="startBtn">开始</button>
+      <button class="ctl-btn" id="restartBtn">重开</button>
+    </div>
+    <div class="dpad" id="dpad">
+      <button data-dir="up" class="dpad-up">↑</button>
+      <button data-dir="left" class="dpad-left">←</button>
+      <button data-dir="down" class="dpad-down">↓</button>
+      <button data-dir="right" class="dpad-right">→</button>
+    </div>
+  </section>
+  <section>
+    <h2>三个脑子都是谁</h2>
+    <ul>
+      <li>我来开：你亲自驾驶。方向键、WASD、手机滑动、屏幕按钮都行。看 AI 看到一半想接管，直接按方向键就夺回方向盘。</li>
+      <li>贪心脑：用 BFS 找去苹果的最短路，直扑过去，别的什么都不管。发光的虚线就是它想的路。跑得最快，也最容易把自己堵进死角。</li>
+      <li>谨慎脑：同样先找最短路，但扑之前会先验一遍：吃完这个苹果，还能不能回头摸到自己的尾巴。能，才扑；不能，就先追着尾巴绕圈等机会。所以它活得久得多。</li>
+    </ul>
+    <p>BFS 就是广度优先搜索，我备赛模板库里躺着的算法之一。这个小游戏，一半是玩，一半是把算法摊开给你看。</p>
+  </section>
+</main>
+<footer>
+  <p><a href="index.html">回主页</a></p>
+</footer>
+<script>
+"use strict";
+/* ============ 棋盘与状态 ============ */
+var COLS = 21, ROWS = 21, CELL = 20;
+var canvas = document.getElementById("board");
+var ctx = canvas.getContext("2d");
+
+var snake, dir, dirQueue, apple, score, planPath, state, timer;
+var mode = "manual";
+var SPEEDS = { manual: 135, greedy: 100, safe: 85 };
+var DIRS = {
+  up:    { x: 0, y: -1 },
+  down:  { x: 0, y: 1 },
+  left:  { x: -1, y: 0 },
+  right: { x: 1, y: 0 }
+};
+
+/* ============ 最佳成绩（存浏览器本地） ============ */
+function loadBest(m) {
+  try { return parseInt(localStorage.getItem("snakeBrain.best." + m), 10) || 0; }
+  catch (e) { return 0; }
+}
+function saveBest(m, v) {
+  try { localStorage.setItem("snakeBrain.best." + m, String(v)); } catch (e) {}
+}
+function refreshScoreboard() {
+  document.getElementById("score").textContent = score;
+  document.getElementById("length").textContent = snake.length;
+  document.getElementById("best-manual").textContent = loadBest("manual");
+  document.getElementById("best-greedy").textContent = loadBest("greedy");
+  document.getElementById("best-safe").textContent = loadBest("safe");
+}
+function setStatus(t) { document.getElementById("status").textContent = t; }
+
+/* ============ 小音效（吃苹果叮一声，阵亡嗡一声） ============ */
+var audioCtx = null;
+function beep(freq, dur, type) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = type || "square"; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.05, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + dur);
+  } catch (e) {}
+}
+
+/* ============ 基础工具 ============ */
+function key(x, y) { return x + "," + y; }
+function sameCell(a, b) { return a.x === b.x && a.y === b.y; }
+function inBoard(x, y) { return x >= 0 && x < COLS && y >= 0 && y < ROWS; }
+
+/* 身体占用表。尾巴尖默认算空位，因为它下一步就会挪走 */
+function blockedSet(body, tailFree) {
+  var s = new Set();
+  var n = tailFree ? body.length - 1 : body.length;
+  for (var i = 0; i < n; i++) s.add(key(body[i].x, body[i].y));
+  return s;
+}
+
+/* BFS：从 start 到 goal 的最短路，返回路径格子数组（不含起点，含终点），无路返回 null */
+function bfs(start, goal, blocked) {
+  if (sameCell(start, goal)) return [];
+  var q = [start], prev = {}, seen = new Set([key(start.x, start.y)]);
+  prev[key(start.x, start.y)] = null;
+  while (q.length) {
+    var cur = q.shift();
+    var names = ["up", "down", "left", "right"];
+    for (var i = 0; i < 4; i++) {
+      var d = DIRS[names[i]];
+      var nx = cur.x + d.x, ny = cur.y + d.y, k = key(nx, ny);
+      if (!inBoard(nx, ny) || seen.has(k)) continue;
+      if (blocked.has(k) && !(nx === goal.x && ny === goal.y)) continue;
+      seen.add(k); prev[k] = cur;
+      if (nx === goal.x && ny === goal.y) {
+        var path = [], node = { x: nx, y: ny };
+        while (node && !sameCell(node, start)) { path.unshift(node); node = prev[key(node.x, node.y)]; }
+        return path;
+      }
+      q.push({ x: nx, y: ny });
+    }
+  }
+  return null;
+}
+
+/* 洪水填充：从某格出发能到达的空格数，用来给“绕圈”找最宽敞的方向 */
+function floodCount(start, blocked) {
+  var seen = new Set([key(start.x, start.y)]), q = [start];
+  while (q.length) {
+    var cur = q.shift(), names = ["up", "down", "left", "right"];
+    for (var i = 0; i < 4; i++) {
+      var d = DIRS[names[i]], nx = cur.x + d.x, ny = cur.y + d.y, k = key(nx, ny);
+      if (!inBoard(nx, ny) || seen.has(k) || blocked.has(k)) continue;
+      seen.add(k); q.push({ x: nx, y: ny });
+    }
+  }
+  return seen.size;
+}
+
+function dirBetween(a, b) { return { x: b.x - a.x, y: b.y - a.y }; }
+function hitsBody(cell, body, grow) {
+  var n = grow ? body.length : body.length - 1;
+  for (var i = 0; i < n; i++) if (sameCell(cell, body[i])) return true;
+  return false;
+}
+
+/* ============ 两个 AI 脑子 ============ */
+/* 贪心脑：最短路直扑，找不到路就随便找个不撞的方向苟一下 */
+function greedyMove() {
+  var head = snake[0];
+  var path = bfs(head, apple, blockedSet(snake, true));
+  if (path && path.length) {
+    planPath = path;
+    setStatus("贪心脑：最短路 " + path.length + " 步，直扑苹果，别的都不管。");
+    return dirBetween(head, path[0]);
+  }
+  planPath = [];
+  setStatus("贪心脑：没路了！随便找个方向苟一下……");
+  return fallbackMove();
+}
+
+/* 谨慎脑：先验安全（吃完还能摸到尾巴）再扑，否则追尾巴，最后才绕圈 */
+function safeMove() {
+  var head = snake[0], tail = snake[snake.length - 1];
+  var path = bfs(head, apple, blockedSet(snake, true));
+  if (path && path.length) {
+    /* 在脑子里模拟吃掉这个苹果，再检查新蛇头能不能找到回尾巴的路 */
+    var v = snake.map(function (c) { return { x: c.x, y: c.y }; });
+    for (var i = 0; i < path.length; i++) {
+      v.unshift(path[i]);
+      if (i !== path.length - 1) v.pop();
+    }
+    var back = bfs(v[0], v[v.length - 1], blockedSet(v, true));
+    if (back) {
+      planPath = path;
+      setStatus("谨慎脑：最短路 " + path.length + " 步，验过了，吃完能回头摸到尾巴，扑。");
+      return dirBetween(head, path[0]);
+    }
+    setStatus("谨慎脑：这苹果有毒，吃完会被自己堵死，先绕。");
+  } else {
+    setStatus("谨慎脑：暂时够不到苹果，先追尾巴等机会。");
+  }
+  var tailPath = bfs(head, tail, blockedSet(snake, true));
+  if (tailPath && tailPath.length) {
+    planPath = tailPath;
+    return dirBetween(head, tailPath[0]);
+  }
+  planPath = [];
+  return fallbackMove();
+}
+
+/* 实在没路时的兜底：选一个不撞、且前方最宽敞的方向 */
+function fallbackMove() {
+  var head = snake[0], best = null, bestSpace = -1;
+  var names = ["up", "down", "left", "right"];
+  for (var i = 0; i < 4; i++) {
+    var d = DIRS[names[i]];
+    if (d.x === -dir.x && d.y === -dir.y) continue;
+    var cell = { x: head.x + d.x, y: head.y + d.y };
+    if (!inBoard(cell.x, cell.y) || hitsBody(cell, snake, false)) continue;
+    var space = floodCount(cell, blockedSet(snake, true));
+    if (space > bestSpace) { bestSpace = space; best = d; }
+  }
+  return best || dir;
+}
+
+/* ============ 游戏流程 ============ */
+function placeApple() {
+  var blocked = blockedSet(snake, false), free = [];
+  for (var x = 0; x < COLS; x++) for (var y = 0; y < ROWS; y++) {
+    if (!blocked.has(key(x, y))) free.push({ x: x, y: y });
+  }
+  apple = free[Math.floor(Math.random() * free.length)] || { x: 0, y: 0 };
+}
+
+function reset() {
+  snake = [{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }];
+  dir = { x: 1, y: 0 }; dirQueue = []; score = 0; planPath = [];
+  placeApple(); refreshScoreboard();
+}
+
+function startRun() {
+  reset(); state = "running";
+  document.getElementById("startBtn").textContent = "暂停";
+  setStatus(mode === "manual" ? "你来开：方向键、WASD 或滑动控制。" :
+            mode === "greedy" ? "贪心脑接管，坐稳了。" : "谨慎脑接管，慢慢看它表演。");
+  clearTimeout(timer); timer = setTimeout(loop, SPEEDS[mode]);
+  draw();
+}
+
+function gameOver() {
+  state = "over";
+  document.getElementById("startBtn").textContent = "再来一局";
+  if (mode === "greedy") setStatus("贪心脑把自己堵死了。最短路，不等于活路。得分 " + score + "。");
+  else if (mode === "safe") setStatus("谨慎脑也尽力了，活了 " + snake.length + " 节。得分 " + score + "。");
+  else setStatus("撞了。得分 " + score + "，换个脑子试试，或者再来一局。");
+  beep(150, 0.3, "sawtooth");
+  draw();
+}
+
+function step() {
+  if (mode === "manual") {
+    if (dirQueue.length) dir = dirQueue.shift();
+  } else {
+    dir = (mode === "greedy") ? greedyMove() : safeMove();
+  }
+  var head = snake[0];
+  var newHead = { x: head.x + dir.x, y: head.y + dir.y };
+  var eat = sameCell(newHead, apple);
+  if (!inBoard(newHead.x, newHead.y) || hitsBody(newHead, snake, eat)) { gameOver(); return; }
+  snake.unshift(newHead);
+  if (eat) {
+    score++;
+    if (score > loadBest(mode)) saveBest(mode, score);
+    beep(660, 0.07, "square");
+    placeApple();
+  } else {
+    snake.pop();
+  }
+  refreshScoreboard();
+}
+
+function loop() {
+  if (state !== "running") return;
+  step();
+  draw();
+  if (state === "running") timer = setTimeout(loop, SPEEDS[mode]);
+}
+
+/* ============ 画面 ============ */
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  /* 棋盘格 */
+  ctx.strokeStyle = "rgba(255,255,255,0.16)";
+  ctx.lineWidth = 1;
+  for (var i = 1; i < COLS; i++) {
+    ctx.beginPath(); ctx.moveTo(i * CELL + 0.5, 0); ctx.lineTo(i * CELL + 0.5, canvas.height); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, i * CELL + 0.5); ctx.lineTo(canvas.width, i * CELL + 0.5); ctx.stroke();
+  }
+  /* AI 想的路：发光小点 */
+  if (planPath && planPath.length && mode !== "manual") {
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    planPath.forEach(function (c) {
+      ctx.beginPath();
+      ctx.arc(c.x * CELL + CELL / 2, c.y * CELL + CELL / 2, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+  /* 苹果 */
+  ctx.fillStyle = "#f43f5e";
+  ctx.beginPath();
+  ctx.arc(apple.x * CELL + CELL / 2, apple.y * CELL + CELL / 2, CELL / 2 - 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.65)";
+  ctx.beginPath();
+  ctx.arc(apple.x * CELL + CELL / 2 - 3, apple.y * CELL + CELL / 2 - 3.5, 2.4, 0, Math.PI * 2);
+  ctx.fill();
+  /* 蛇身：从头到尾由深紫渐变到粉紫 */
+  for (var i = snake.length - 1; i >= 0; i--) {
+    var c = snake[i], t = snake.length <= 1 ? 0 : i / (snake.length - 1);
+    ctx.fillStyle = "hsl(" + Math.round(252 - 52 * t) + ", 72%," + Math.round(58 - 6 * t) + "%)";
+    rr(c.x * CELL + 1.5, c.y * CELL + 1.5, CELL - 3, CELL - 3, 6);
+    ctx.fill();
+  }
+  /* 蛇头眼睛 */
+  var h = snake[0], cx = h.x * CELL + CELL / 2, cy = h.y * CELL + CELL / 2;
+  var ex = dir.x, ey = dir.y, px = -ey, py = ex;
+  [[-4.5, 3], [4.5, 3]].forEach(function (o) {
+    var exx = cx + px * o[0] + ex * o[1], eyy = cy + py * o[0] + ey * o[1];
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(exx, eyy, 3.1, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#1c2440";
+    ctx.beginPath(); ctx.arc(exx + ex * 1.3, eyy + ey * 1.3, 1.7, 0, Math.PI * 2); ctx.fill();
+  });
+  /* 结束遮罩 */
+  if (state === "over") {
+    ctx.fillStyle = "rgba(28,32,64,0.45)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 30px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("蛇没了", canvas.width / 2, canvas.height / 2 - 8);
+    ctx.font = "16px system-ui, sans-serif";
+    ctx.fillText("得分 " + score + " · 点「再来一局」", canvas.width / 2, canvas.height / 2 + 24);
+  }
+  if (state === "idle") {
+    ctx.fillStyle = "rgba(28,32,64,0.35)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 22px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("选个脑子，点开始", canvas.width / 2, canvas.height / 2);
+  }
+}
+
+/* ============ 操作 ============ */
+function setMode(m, silent) {
+  mode = m; planPath = [];
+  var btns = document.querySelectorAll(".mode-btn");
+  btns.forEach(function (b) { b.classList.toggle("active", b.dataset.mode === m); });
+  if (!silent && state !== "running") {
+    setStatus(m === "manual" ? "你来开：点开始，方向键或滑动控制。" :
+              m === "greedy" ? "贪心脑待命：最短路直扑，快是快，就是容易作死。" :
+              "谨慎脑待命：先验安全再扑苹果，主打一个活得久。");
+  }
+  if (!silent && state === "running") {
+    setStatus(m === "manual" ? "你接管了方向盘。" :
+              m === "greedy" ? "贪心脑接管，坐稳了。" : "谨慎脑接管，慢慢看它表演。");
+  }
+}
+
+function queueDir(name) {
+  var d = DIRS[name];
+  var last = dirQueue.length ? dirQueue[dirQueue.length - 1] : dir;
+  if (d.x === -last.x && d.y === -last.y) return;
+  if (d.x === last.x && d.y === last.y) return;
+  if (dirQueue.length < 3) dirQueue.push(d);
+}
+
+document.querySelectorAll(".mode-btn").forEach(function (b) {
+  b.addEventListener("click", function () { setMode(b.dataset.mode); });
+});
+document.getElementById("startBtn").addEventListener("click", function () {
+  if (state === "running") {
+    state = "paused"; clearTimeout(timer);
+    this.textContent = "继续"; setStatus("暂停中。");
+  } else if (state === "paused") {
+    state = "running"; this.textContent = "暂停";
+    timer = setTimeout(loop, SPEEDS[mode]);
+  } else {
+    startRun();
+  }
+});
+document.getElementById("restartBtn").addEventListener("click", startRun);
+
+document.addEventListener("keydown", function (e) {
+  var map = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right",
+              w: "up", s: "down", a: "left", d: "right",
+              W: "up", S: "down", A: "left", D: "right" };
+  if (map[e.key]) {
+    e.preventDefault();
+    if (mode !== "manual") setMode("manual", true), setStatus("你接管了方向盘。");
+    if (state === "running") queueDir(map[e.key]);
+  } else if (e.key === " ") {
+    e.preventDefault();
+    document.getElementById("startBtn").click();
+  }
+});
+
+/* 手机滑动 */
+var touchStart = null;
+canvas.addEventListener("touchstart", function (e) {
+  touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+}, { passive: true });
+canvas.addEventListener("touchend", function (e) {
+  if (!touchStart) return;
+  var dx = e.changedTouches[0].clientX - touchStart.x;
+  var dy = e.changedTouches[0].clientY - touchStart.y;
+  touchStart = null;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < 24) return;
+  var name = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up");
+  if (mode !== "manual") setMode("manual", true), setStatus("你接管了方向盘。");
+  if (state === "running") queueDir(name);
+}, { passive: true });
+
+/* 屏幕方向键 */
+document.querySelectorAll("#dpad button").forEach(function (b) {
+  b.addEventListener("click", function () {
+    if (mode !== "manual") setMode("manual", true), setStatus("你接管了方向盘。");
+    if (state === "running") queueDir(b.dataset.dir);
+  });
+});
+
+/* ============ 开场 ============ */
+state = "idle";
+reset();
+draw();
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+/* 小站的样式：就这一个文件管全站长相，改颜色、改字号都在这里 */
+body {
+  font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px;
+  line-height: 1.7;
+  color: #222;
+  background: #fafafa;
+}
+header h1 { margin-bottom: 4px; }
+nav { margin: 16px 0; }
+nav a { margin-right: 16px; }
+a { color: #2563eb; }
+section { margin-bottom: 24px; }
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+.gallery img { width: 100%; border-radius: 8px; }
+.gallery figcaption { text-align: center; color: #666; }
+.hint { color: #666; font-size: 14px; }
+footer { color: #888; font-size: 14px; margin-top: 32px; }

@@ -118,6 +118,59 @@ footer {
   margin-top: 28px;
 }
 
+/* 头像：圆的，带一圈玻璃高光描边 */
+.avatar {
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 3px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 10px 28px rgba(31, 38, 135, 0.25);
+  margin-bottom: 14px;
+}
+
+/* 名字下面那句签名 */
+.tagline {
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: #2b3350;
+  margin: 4px 0 10px;
+}
+
+/* 技能标签：一排小药丸 */
+.tags { display: flex; flex-wrap: wrap; gap: 8px; }
+.tag {
+  padding: 4px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  font-size: 0.92rem;
+  color: #2b3350;
+}
+
+/* 项目卡片：大玻璃卡里再浮一层浅玻璃 */
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+}
+.project-card {
+  background: rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 18px;
+  padding: 16px 18px;
+  transition: transform 0.25s ease, background 0.25s ease;
+}
+.project-card:hover {
+  transform: translateY(-3px);
+  background: rgba(255, 255, 255, 0.5);
+}
+.project-card h3 { margin: 0 0 6px; }
+.project-card p { margin: 0 0 10px; font-size: 0.95rem; color: #333c5c; }
+.card-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.card-tags .tag { font-size: 0.8rem; padding: 2px 10px; }
+.project-status { font-size: 0.85rem; color: #5a6480; }
+
 /* 手机上收紧一点，别挤 */
 @media (max-width: 560px) {
   body { padding: 20px 12px 36px; }
